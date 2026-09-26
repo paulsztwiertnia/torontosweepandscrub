@@ -1,10 +1,8 @@
 "use client";
 
-import { Turnstile, type TurnstileInstance } from "@marsidev/react-turnstile";
-import { useRef, useState } from "react";
+import { useState } from "react";
 
-const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY
-    || (process.env.NODE_ENV === "development" ? "1x00000000000000000000AA" : "");
+const FORMSPREE_URL = "https://formspree.io/f/xyeznoqg";
 
 type TextField = {
     type: "text" | "email" | "tel" | "textarea" | "number";
@@ -25,10 +23,21 @@ export type ContactField = TextField | CheckField;
 
 const inputClass = "mt-1 w-full rounded-sm border border-neutral-500 bg-white px-3 py-2.5 text-base text-neutral-900 placeholder:text-neutral-400";
 
+function formspreeError(body: unknown) {
+    if (!body || typeof body !== "object" || !("errors" in body) || !Array.isArray(body.errors)) {
+        return "Could not send your message.";
+    }
+    const first = body.errors[0];
+    if (first && typeof first === "object" && "message" in first && typeof first.message === "string") {
+        return first.message;
+    }
+    return "Could not send your message.";
+}
+
 export function ContactForm({
     fields,
     id,
-    source = "Contact",
+    source = "Quote request",
     submitLabel = "Send",
 }: {
     fields: ContactField[];
@@ -38,41 +47,37 @@ export function ContactForm({
 }) {
     const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
     const [error, setError] = useState("");
-    const [captchaToken, setCaptchaToken] = useState("");
-    const turnstileRef = useRef<TurnstileInstance>(undefined);
 
     async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
         event.preventDefault();
-        if (!captchaToken) {
-            setError("Complete the captcha.");
-            setStatus("error");
-            return;
-        }
-
         setStatus("sending");
         setError("");
 
         const data = new FormData(event.currentTarget);
-        const payload: Record<string, string | string[]> = {};
+        const payload: Record<string, string> = { _subject: source };
+
         for (const field of fields) {
             if (field.type === "checks") {
-                payload[field.name] = data.getAll(field.name).map(String);
+                const selected = data.getAll(field.name).map(String).filter(Boolean);
+                if (selected.length) payload[field.name] = selected.join(", ");
             } else {
-                payload[field.name] = String(data.get(field.name) ?? "");
+                const value = String(data.get(field.name) ?? "").trim();
+                if (value) payload[field.name] = value;
             }
         }
 
+        if (payload.email) payload._replyto = payload.email;
+        if (payload.name) payload._subject = `${source} — ${payload.name}`;
+
         try {
-            const response = await fetch("/api/contact", {
+            const response = await fetch(FORMSPREE_URL, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ source, fields: payload, captchaToken }),
+                headers: { Accept: "application/json", "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
             });
             const body = await response.json().catch(() => null);
             if (!response.ok) {
-                setCaptchaToken("");
-                turnstileRef.current?.reset();
-                setError(typeof body?.error === "string" ? body.error : "Could not send your message.");
+                setError(formspreeError(body));
                 setStatus("error");
                 return;
             }
@@ -127,21 +132,11 @@ export function ContactForm({
                     );
                 })}
             </div>
-            {turnstileSiteKey ? (
-                <Turnstile
-                    ref={turnstileRef}
-                    siteKey={turnstileSiteKey}
-                    onSuccess={setCaptchaToken}
-                    onExpire={() => setCaptchaToken("")}
-                    onError={() => setCaptchaToken("")}
-                />
-            ) : (
-                <p className="text-sm text-red-700">Captcha is unavailable.</p>
-            )}
+            <input type="text" name="_gotcha" tabIndex={-1} autoComplete="off" className="hidden" aria-hidden="true" />
             {error ? <p className="text-sm text-red-700">{error}</p> : null}
             <button
                 type="submit"
-                disabled={status === "sending" || !captchaToken}
+                disabled={status === "sending"}
                 className="w-full rounded-sm bg-[#61B6CE] px-8 py-3 text-sm font-semibold text-white hover:bg-[#4aa3bb] disabled:opacity-70 sm:w-auto"
             >
                 {status === "sending" ? "Sending…" : submitLabel}
